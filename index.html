@@ -638,6 +638,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 }
 .rotate-hint .rotate-ico { font-size: 1rem; line-height: 1; }
 .rotate-hint p { margin: 0; }
+@media screen and (max-width: 900px) and (orientation: portrait) {
+  html { transform: rotate(90deg); transform-origin: left top; width: 100vh; height: 100vw; overflow-x: hidden; position: absolute; top: 0; left: 100%; }
+  #rotate-hint { display: none !important; }
+}
 @media (orientation: portrait) and (max-width: 700px) {
   .rotate-hint.show-on-play { display: flex; opacity: 1; }
   .rotate-hint.show-on-play.is-fading { opacity: 0; }
@@ -1259,6 +1263,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
      so an offline deployment never waits on a network timeout. --><script>
 (() => {
 'use strict';
+const IS_MOBILE_UA = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+function isForcedLandscape() { return IS_MOBILE_UA && window.matchMedia('(max-width:900px) and (orientation:portrait)').matches; }
+function fvw() { return isForcedLandscape() ? window.innerHeight : window.innerWidth; }
+function fvh() { return isForcedLandscape() ? window.innerWidth : window.innerHeight; }
 
 /* ═══════════════════════════════════════════════════════════════
    নদী বাঁচাও — Save the River  |  Level 1 single-file build
@@ -1823,7 +1831,7 @@ const LevelConfig = Object.freeze({
     bankTopY: 0.95,
     cityEndX: 2.5,        // far bank stops here; open water beyond
     promenadeEndX: 21,    // near walkway stops here
-    binX: 11.4, binZ: 6.5, binY: 0.95,
+    binX: -3.5, binZ: 6.5, binY: 0.95,
     binAssistRadius: 3.8, dragLift: 1.35,
   },
 });
@@ -1838,7 +1846,7 @@ const GameConfig = {
   loop: { fixedStep: 1 / 60, maxFrameDelta: 0.05 },
   world: { fogColor: 0x8eb8c8, fogNear: 34, fogFar: 110 },
     qualityTiers: {
-    low:    { pixelRatioCap: 1.0, shadows: false, shadowMapSize: 512,  antialias: false, waterDetail: 0, pedestrians: 14, traffic: 9, particles: 0, rain: 40, bloom: false, reflections: false },
+    low:    { pixelRatioCap: 1.0, shadows: false, shadowMapSize: 512,  antialias: false, waterDetail: 1, pedestrians: 14, traffic: 9, particles: 0, rain: 40, bloom: false, reflections: false },
     medium: { pixelRatioCap: 1.25, shadows: true,  shadowMapSize: 1024, antialias: false, waterDetail: 1, pedestrians: 26, traffic: 18, particles: 16, rain: 90, bloom: false, reflections: false },
     high:   { pixelRatioCap: 1.75, shadows: true,  shadowMapSize: 1536, antialias: true,  waterDetail: 2, pedestrians: 40, traffic: 28, particles: 28, rain: 140, bloom: true, reflections: true },
   },
@@ -2452,6 +2460,8 @@ class GameLoop {
     this._fpsFrames = 0;
     this._fpsWindowStart = 0;
     this._fpsEl = document.getElementById('fps-meter');
+    this._frameCapMs = IS_MOBILE_UA ? 1000 / 30 : 0;
+    this._lastFrameAt = 0;
     this._tick = this._tick.bind(this);
   }
   start() {
@@ -2468,6 +2478,11 @@ class GameLoop {
   setLogicPaused(v) { this._pausedLogic = v; }
   _tick(now) {
     if (!this._running) return;
+    if (this._frameCapMs && (now - this._lastFrameAt) < this._frameCapMs) {
+      this._rafId = requestAnimationFrame(this._tick);
+      return;
+    }
+    this._lastFrameAt = now;
     const step = GameConfig.loop.fixedStep;
     let frameDelta = (now - this._lastTime) / 1000;
     this._lastTime = now;
@@ -2514,7 +2529,7 @@ class SceneManager {
     const tierName = settings.getResolvedQuality();
     const tier = GameConfig.qualityTiers[tierName];
     this.renderer = new THREE.WebGLRenderer({
-      canvas, antialias: tier.antialias, powerPreference: 'high-performance',
+      canvas, antialias: tier.antialias, powerPreference: IS_MOBILE_UA ? 'low-power' : 'high-performance',
       alpha: false,
     });
     this.renderer.setClearColor(0x87c6d8, 1);
@@ -2564,7 +2579,7 @@ class SceneManager {
     this._doResize();
   }
   _doResize() {
-    const w = window.innerWidth, h = window.innerHeight;
+    const w = fvw(), h = fvh();
     this.renderer.setSize(w, h, true);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
@@ -2663,6 +2678,7 @@ class EnvironmentManager {
     this.shared = {};
     this.jam = 0;
     this.waterRise = 0;
+    this._thunderCooldown = 0;
     this.flooding = false;
     this._forceFlood = false;
     this.rainIntensity = 0;
@@ -3141,10 +3157,10 @@ class EnvironmentManager {
     glow.position.y = 0.7;
     this.binGlow = glow;
     const ring = new THREE.Mesh(
-      new THREE.RingGeometry(1.15, 1.5, 40),
+      new THREE.RingGeometry(1.1, 1.55, 64),
       new THREE.MeshBasicMaterial({
-        color: 0x4fe3bd, transparent: true, opacity: 0.24,
-        side: THREE.DoubleSide, depthWrite: false,
+        map: this._makeDashRingTexture(), color: 0x4fe3bd, transparent: true, opacity: 0.55,
+        side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
       })
     );
     ring.rotation.x = -Math.PI / 2;
@@ -3196,6 +3212,23 @@ class EnvironmentManager {
     }
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  _makeDashRingTexture() {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 32;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, 256, 32);
+    ctx.fillStyle = '#eafff6';
+    const n = 14;
+    for (let i = 0; i < n; i++) {
+      const w = 256 / n;
+      ctx.fillRect(i * w, 0, w * 0.55, 32);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
     return tex;
   }
 
@@ -4294,6 +4327,10 @@ class EnvironmentManager {
       this.bus.emit('audio:floodHorns', { on: this.flooding });
     }
 
+    if (this.binRing) {
+      this.binRing.rotation.z += dt * 0.7;
+      if (!(this._binPulse > 0)) this.binRing.material.opacity = 0.5 + Math.sin(t * 2.4) * 0.15;
+    }
     if (this.binGlow) {
       const target = this._binHovered ? 0.42 : 0;
       const mat = this.binGlow.material;
@@ -4558,7 +4595,9 @@ class EnvironmentManager {
     }
 
     // Thunder flashes when clouds are heavy and raining
-    if (raining && this.cloudDensity > 0.8 && Math.random() < dt * 0.25) {
+    if (this._thunderCooldown > 0) this._thunderCooldown -= dt;
+    if (raining && this.cloudDensity > 0.8 && this._thunderCooldown <= 0 && Math.random() < dt * 0.25) {
+      this._thunderCooldown = 4 + Math.random() * 5;
       this.bus.emit('weather:thunder');
     }
 
@@ -4922,12 +4961,12 @@ class WasteManager {
       if (camera) {
         const dist = camera.position.distanceTo(w.mesh.position);
         const vFov = camera.fov * Math.PI / 180;
-        const worldPerCssPx = (2 * Math.tan(vFov / 2) * dist) / Math.max(1, window.innerHeight);
+        const worldPerCssPx = (2 * Math.tan(vFov / 2) * dist) / Math.max(1, fvh());
         const minWorld = worldPerCssPx * LevelConfig.hitProxyMinCssPx * 0.55;
         const scale = Math.max(1.15, minWorld / 0.7);
         w.proxy.scale.setScalar(scale);
         // Orientation-aware labels: readable in landscape, compact in portrait
-        const portrait = window.innerHeight > window.innerWidth;
+        const portrait = fvh() > fvw();
         const targetCssPx = portrait ? 72 : 108;
         const labelScale = Math.min(portrait ? 1.7 : 2.45, Math.max(portrait ? 1.05 : 1.55, worldPerCssPx * targetCssPx));
         w.labelSprite.scale.set(labelScale, labelScale * 0.28, 1);
@@ -5654,7 +5693,7 @@ class UIManager {
     if (!cam || !worldPos) return;
     const layer = this._el('popup-layer');
     if (!layer) return;
-    const cap = window.innerWidth < 700 ? 3 : 5;
+    const cap = fvw() < 700 ? 3 : 5;
     if (layer.querySelectorAll('.comic-bubble:not(.vehicle-emoji)').length >= cap) return;
     const yOffset = kind === 'driver' ? 2.1 : 1.6;
     let key;
@@ -5692,11 +5731,11 @@ class UIManager {
     v.y += track.yOffset;
     v.project(cam);
     const padX = 72;
-    const hudFloor = window.innerWidth < 700 ? 96 : 78;
-    let x = (v.x * 0.5 + 0.5) * window.innerWidth;
-    let y = (-v.y * 0.5 + 0.5) * window.innerHeight;
-    x = Math.min(window.innerWidth - padX, Math.max(padX, x));
-    y = Math.min(window.innerHeight - 40, Math.max(hudFloor, y));
+    const hudFloor = fvw() < 700 ? 96 : 78;
+    let x = (v.x * 0.5 + 0.5) * fvw();
+    let y = (-v.y * 0.5 + 0.5) * fvh();
+    x = Math.min(fvw() - padX, Math.max(padX, x));
+    y = Math.min(fvh() - 40, Math.max(hudFloor, y));
     track.el.style.left = x + 'px';
     track.el.style.top = y + 'px';
     track.el.style.opacity = (v.z > 1 || (track.entity && track.entity.visible === false)) ? '0' : '1';
@@ -6196,7 +6235,7 @@ class Game {
     this.haptics.collect();
     const combo = this.score.combo;
     const label = combo > 1 ? ('+' + gained + ' ×' + combo) : ('+' + gained);
-    this.ui.showScorePopup(window.innerWidth * 0.5, window.innerHeight * 0.38, label, {
+    this.ui.showScorePopup(fvw() * 0.5, fvh() * 0.38, label, {
       points: gained,
       combo,
     });
